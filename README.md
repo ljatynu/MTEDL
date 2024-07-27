@@ -62,7 +62,7 @@ zip file and extract it to the main directory as the `/dataset` folder.
     - For specific loading methods and the generation of n-way k-shot few-shot tasks, please refer to the data loading
       script [mini_imagenet.py](data%2Fmini_imagenet.py).
 
-**Checkpoints preparation:** The models trained on the three benchmarks, miniImageNet, CIFAR-FS and FC100, have been saved. Please download them from [here]() and extract them to the `/checkpoints` folder.
+**Checkpoints preparation:** The models trained on the three benchmarks, miniImageNet, CIFAR-FS and FC100, have been saved. Please download them from [here](https://drive.google.com/file/d/1M98CyQDQkls1tX0qpiVRONMAn6TtX8vt/view?usp=drive_link) and extract them to the `/checkpoints` folder.
 
 - The explanation for the `/checkpoints` directory:
   - The model pre-trained on each dataset (using cross-entropy loss) is stored in its respective folder, for example `checkpoints/pre/miniImageNet`.
