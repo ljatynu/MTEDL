@@ -4,9 +4,15 @@ import numpy as np
 import torch
 import os.path as osp
 
+from torch.utils.data import DataLoader
+
+from dataloader.CIFAR_FS import CIFAR_FS
+from dataloader.FC100 import FC100
+from dataloader.miniImageNet import MiniImageNet
+from dataloader.samplers import CategoriesSampler
 from metrics import compute_differential_entropy, compute_mutual_information, compute_precision, ROC_OOD
 from models.mtl import MtlLearner
-from utils.misc import pprint, ECELoss, count_acc
+from utils.misc import pprint, ECELoss, count_acc, get_task_data
 from utils.gpu_tools import set_gpu
 
 def calculate_avg_std_ci95(data):
@@ -55,7 +61,7 @@ parser.add_argument('--step_size', type=int, default=10)  # The number of epochs
 parser.add_argument('--gamma', type=float, default=0.5)  # Gamma for the meta-train learning rate decay
 parser.add_argument('--loss_type', type=str, default='log', choices=['mse', 'log', 'digamma'])
 
-parser.add_argument('--threshold', type=float, default=0.1)
+parser.add_argument('--threshold', type=float, default=0.5)
 
 
 # Set and print the parameters
@@ -63,55 +69,18 @@ args = parser.parse_args()
 pprint(vars(args))
 set_gpu(args.gpu)
 
-print('==> Preparing In-distribution data...')
-if args.dataset=='miniImageNet':
-    from data.mini_imagenet import MiniImageNet, FewShotDataloader
-    testdataset = MiniImageNet(phase='test')
-    test_loader = FewShotDataloader(
-        dataset=testdataset,
-        nKnovel=args.way,
-        nKbase=0,
-        nExemplars=args.shot,  # num training examples per novel category
-        nTestNovel=args.way * args.query,
-        # num test examples for all the novel categories
-        nTestBase=0,  # num test examples for all the base categories
-        batch_size=1,
-        num_workers=0,
-        epoch_size=1 * args.task_num  # 600 test tasks
-    )
-elif args.dataset=='CIFAR-FS':
-    from data.CIFAR_FS import CIFAR_FS, FewShotDataloader
-    testdataset = CIFAR_FS(phase='test')
-    test_loader = FewShotDataloader(
-        dataset=testdataset,
-        nKnovel=args.way,
-        nKbase=0,
-        nExemplars=args.shot,  # num training examples per novel category
-        nTestNovel=args.way * args.query,
-        # num test examples for all the novel categories
-        nTestBase=0,  # num test examples for all the base categories
-        batch_size=1,
-        num_workers=0,
-        epoch_size=1 * args.task_num  # 600 test tasks
-    )
-
-    pass
-elif args.dataset=='FC100':
-    from data.FC100 import FC100, FewShotDataloader
-
-    testdataset = FC100(phase='test')
-    test_loader = FewShotDataloader(
-        dataset=testdataset,
-        nKnovel=args.way,
-        nKbase=0,
-        nExemplars=args.shot,  # num training examples per novel category
-        nTestNovel=args.way * args.query,
-        # num test examples for all the novel categories
-        nTestBase=0,  # num test examples for all the base categories
-        batch_size=1,
-        num_workers=0,
-        epoch_size=1 * args.task_num  # 600 test tasks
-    )
+print('==> Preparing data...')
+if args.dataset == 'miniImageNet':
+    Dataset = MiniImageNet
+elif args.dataset == 'CIFAR-FS':
+    Dataset = CIFAR_FS
+elif args.dataset == 'FC100':
+    Dataset = FC100
+# Load meta-train set
+dataset = Dataset('test')
+sampler = CategoriesSampler(dataset.label, args.task_num, args.way,
+                            args.shot + args.query)
+dataloader = DataLoader(dataset=dataset, batch_sampler=sampler, pin_memory=True)
 
 print('==> Preparing Model...')
 model = MtlLearner(args)
@@ -126,8 +95,8 @@ model.eval()
 total_acc_nums = 0
 total_filter_nums = 0
 
-for task_id, task in enumerate(test_loader(1)):
-    data_support, label_support, data_query, label_query, _, _ = [x.squeeze().cuda() for x in task]
+for task_id, task in enumerate(dataloader, 1):
+    data_support, label_support, data_query, label_query = get_task_data(task, args)
 
     evidence = model.threshold_forward(data_support, label_support, data_query, epoch=100)
 
@@ -152,7 +121,7 @@ for task_id, task in enumerate(test_loader(1)):
 
     print(
         "Epistemic uncertainty Estimation: Task [{}/{}]: threshold={:.3f},acc={:.4f},total_acc_nums={},total_filter_nums={}".format(
-            task_id, len(test_loader),
+            task_id, len(dataloader),
             args.threshold,
             filter_acc,
             total_acc_nums,

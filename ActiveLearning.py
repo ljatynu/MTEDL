@@ -2,9 +2,14 @@ import argparse
 
 import numpy as np
 import torch
+from torch.utils.data import DataLoader
 
+from dataloader.CIFAR_FS import CIFAR_FS
+from dataloader.FC100 import FC100
+from dataloader.miniImageNet import MiniImageNet
+from dataloader.samplers import CategoriesSampler
 from models.mtl import MtlLearner
-from utils.misc import pprint, count_acc
+from utils.misc import pprint, count_acc, get_task_data
 from utils.gpu_tools import set_gpu
 
 parser = argparse.ArgumentParser()
@@ -12,7 +17,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--model_type', type=str, default='ResNet', choices=['ResNet'])  # The network architecture
 parser.add_argument('--dataset', type=str, default='CIFAR-FS', choices=['miniImageNet', 'CIFAR-FS', 'FC100'])  # Dataset
 parser.add_argument('--phase', type=str, default='meta_eval', choices=['pre_train', 'meta_train', 'meta_eval', 'OOD_test', 'threshold_test', 'active'])  # Phase
-parser.add_argument('--seed', type=int, default=2)  # Manual seed for PyTorch, "0" means using random seed
+parser.add_argument('--seed', type=int, default=0)  # Manual seed for PyTorch, "0" means using random seed
 parser.add_argument('--gpu', default='0')  # GPU id
 
 # Parameters for meta-train phase
@@ -43,54 +48,17 @@ args.query = args.query + args.active_query
 
 
 print('==> Preparing In-distribution data...')
-if args.dataset=='miniImageNet':
-    from data.mini_imagenet import MiniImageNet, FewShotDataloader
-    testdataset = MiniImageNet(phase='test')
-    test_loader = FewShotDataloader(
-        dataset=testdataset,
-        nKnovel=args.way,
-        nKbase=0,
-        nExemplars=args.shot,  # num training examples per novel category
-        nTestNovel=args.way * args.query,
-        # num test examples for all the novel categories
-        nTestBase=0,  # num test examples for all the base categories
-        batch_size=1,
-        num_workers=0,
-        epoch_size=1 * args.task_num  # 600 test tasks
-    )
-elif args.dataset=='CIFAR-FS':
-    from data.CIFAR_FS import CIFAR_FS, FewShotDataloader
-    testdataset = CIFAR_FS(phase='test')
-    test_loader = FewShotDataloader(
-        dataset=testdataset,
-        nKnovel=args.way,
-        nKbase=0,
-        nExemplars=args.shot,  # num training examples per novel category
-        nTestNovel=args.way * args.query,
-        # num test examples for all the novel categories
-        nTestBase=0,  # num test examples for all the base categories
-        batch_size=1,
-        num_workers=0,
-        epoch_size=1 * args.task_num  # 600 test tasks
-    )
-
-    pass
-elif args.dataset=='FC100':
-    from data.FC100 import FC100, FewShotDataloader
-
-    testdataset = FC100(phase='test')
-    test_loader = FewShotDataloader(
-        dataset=testdataset,
-        nKnovel=args.way,
-        nKbase=0,
-        nExemplars=args.shot,  # num training examples per novel category
-        nTestNovel=args.way * args.query,
-        # num test examples for all the novel categories
-        nTestBase=0,  # num test examples for all the base categories
-        batch_size=1,
-        num_workers=0,
-        epoch_size=1 * args.task_num  # 600 test tasks
-    )
+if args.dataset == 'miniImageNet':
+    Dataset = MiniImageNet
+elif args.dataset == 'CIFAR-FS':
+    Dataset = CIFAR_FS
+elif args.dataset == 'FC100':
+    Dataset = FC100
+# Load meta-train set
+dataset = Dataset('test')
+sampler = CategoriesSampler(dataset.label, args.task_num, args.way,
+                            args.shot + args.query)
+dataloader = DataLoader(dataset=dataset, batch_sampler=sampler, pin_memory=True)
 
 print('==> Preparing Model...')
 model = MtlLearner(args)
@@ -115,14 +83,14 @@ else:
 # Start meta-test
 total_ID_u = []
 total_OOD_u = []
-task = next(enumerate(test_loader(args.seed)))
+_, task = next(enumerate(dataloader))
 
-data_support, label_support, data_query, label_query, _, _ = [x.squeeze().cuda() for x in task[1]]
+data_support, label_support, data_query, label_query = get_task_data(task, args)
 
 # top k per class
 k = 5
 
-logits_q, evidence_q, meta_fw, pre_fw = model.active_forward(data_support, label_support, data_query,epoch=0)
+logits_q, evidence_q, meta_fw, pre_fw = model.active_forward(data_support, label_support, data_query, epoch=0)
 
 # update the parameter
 model.meta_base_learner.fc1_w.data = meta_fw[0]

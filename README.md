@@ -50,7 +50,7 @@ datasets: [miniImageNet](https://proceedings.neurips.cc/paper/2016/hash/90e13578
 and [Places](https://link.springer.com/chapter/10.1007/978-3-031-20053-3_40).
 
 **Data preparation:** Due to the large size of the pre-processed dataset (~17.4GB), we have stored
-it [here](https://drive.google.com/file/d/1JTlFxJ9F7FIHubC6E7vzCebLk3rvpTvd/view?usp=drive_link). Please download this
+it [here](https://drive.google.com/file/d/1pAW4FGskB7173o6lq2qU11NBq3mZ1CP7/view?usp=drive_link). Please download this
 zip file and extract it to the main directory as the `/dataset` folder.
 
 - The explanation for the `/dataset` directory:
@@ -60,7 +60,7 @@ zip file and extract it to the main directory as the `/dataset` folder.
       form of Numpy arrays, along with their corresponding labels as follows.
     - `dataset_train.pkl = {'data':[image_1, image_2, ..., image_n], 'label': [label_1, label_2, ..., label_n]}`
     - For specific loading methods and the generation of n-way k-shot few-shot tasks, please refer to the data loading
-      script [mini_imagenet.py](data%2Fmini_imagenet.py).
+      scripts [miniImageNet.py](dataloader%2FminiImageNet.py) and [samplers.py](dataloader%2Fsamplers.py).
 
 **Checkpoints preparation:** The models trained on the three benchmarks, miniImageNet, CIFAR-FS and FC100, have been saved. Please download them from [here](https://drive.google.com/file/d/1M98CyQDQkls1tX0qpiVRONMAn6TtX8vt/view?usp=drive_link) and extract them to the `/checkpoints` folder.
 
@@ -319,7 +319,8 @@ parameters.
   performance.
   - For 1-shot tasks: `λ_R` is gradually increases from `0` to `0.5`.
   - For 5-shot tasks: `λ_R` is gradually increases from `0` to `0.75`.
-- Please refer to [EDL_loss.py](models%2FEDL_loss.py) (line 67 ~ 70) for adjusting this coefficient ratio before meta-transfer-training:
+- Please refer to [EDL_loss.py](models%2FEDL_loss.py) (line 67 ~ 70) for adjusting this coefficient ratio before meta-transfer-training. For instance, set the `annealing_step` to `2 * epoch_num` to ensure that `λ_R ∈ [0, 0.5]`.
+
   ```python
   annealing_coef = torch.min(
       torch.tensor(1.0, dtype=torch.float32),

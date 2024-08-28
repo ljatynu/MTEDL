@@ -9,6 +9,10 @@ import torch
 import tqdm
 from torch.utils.data import DataLoader
 
+from dataloader.CIFAR_FS import CIFAR_FS
+from dataloader.miniImageNet import MiniImageNet
+from dataloader.FC100 import FC100
+from dataloader.samplers import CategoriesSampler
 from models.EDL_loss import edl_mse_loss, edl_log_loss, edl_digamma_loss
 from models.mtl import MtlLearner
 from utils.misc import Averager, Timer, count_acc, compute_confidence_interval, \
@@ -39,62 +43,36 @@ class MetaTrainer(object):
         meta_base_dir = osp.join(log_base_dir, 'meta')
         if not osp.exists(meta_base_dir):
             os.mkdir(meta_base_dir)
-        save_path1 = '_'.join([args.dataset, args.model_type, 'MT-EDL-10'])
+        save_path1 = '_'.join([args.dataset, args.model_type, 'MT-EDL-1010'])
         save_path2 = 'loss' + str(args.loss_type) + '_lr1' + str(args.meta_lr1) + '_lr2' + str(args.meta_lr2) \
                      + '_batch' + str(args.train_num_batch) + '_maxepoch' + str(args.max_epoch) + '_shot' + str(
             args.shot) + '_updatestep' + str(args.update_step)
         args.save_path = meta_base_dir + '/' + save_path1 + '_' + save_path2
         ensure_path(args.save_path)
-        # self.ECE = ECELoss(n_bins=15, logit=False)
 
         # Set args to be shareable in the class
         self.args = args
-        # if self.args.loss_type == 'mse':
-        #     self.loss = edl_mse_loss
-        # elif self.args.loss_type == 'log':
+
         self.loss = edl_log_loss
-        # elif self.args.loss_type == 'digamma':
-        #     self.loss = edl_digamma_loss
 
-        # if self.args.data_agu == 'mini':
-        if args.dataset == 'miniImageNet':
-            from data.mini_imagenet import MiniImageNet, FewShotDataloader
-            dataset, dataloader = MiniImageNet, FewShotDataloader
-        elif args.dataset == 'CIFAR-FS':
-            from data.CIFAR_FS import CIFAR_FS, FewShotDataloader
-            dataset, dataloader = CIFAR_FS, FewShotDataloader
-        elif args.dataset == 'FC100':
-            from data.FC100 import FC100, FewShotDataloader
-            dataset, dataloader = FC100, FewShotDataloader
+        if self.args.dataset == 'miniImageNet':
+            self.Dataset = MiniImageNet
+        elif self.args.dataset == 'CIFAR-FS':
+            self.Dataset = CIFAR_FS
+        elif self.args.dataset == 'FC100':
+            self.Dataset = FC100
+        # Load meta-train set
+        self.trainset = self.Dataset('train')
+        self.train_sampler = CategoriesSampler(self.trainset.label, self.args.train_num_batch, self.args.way,
+                                               self.args.shot + self.args.train_query)
+        self.train_loader = DataLoader(dataset=self.trainset, batch_sampler=self.train_sampler, pin_memory=True)
 
-        self.trainset = dataset(phase='train')
-        self.train_loader = dataloader(
-            dataset=self.trainset,
-            nKnovel=args.way,
-            nKbase=0,
-            nExemplars=args.shot,  # num training examples per novel category
-            nTestNovel=args.way * args.train_query,
-            # num test examples for all the novel categories
-            nTestBase=0,  # num test examples for all the base categories
-            batch_size=1,
-            num_workers=0,
-            epoch_size=1 * args.train_num_batch
-        )
-        self.valset = dataset(phase='val')
-        self.val_loader = dataloader(
-            dataset=self.valset,
-            nKnovel=args.way,
-            nKbase=0,
-            nExemplars=args.shot,  # num training examples per novel category
-            nTestNovel=args.way * args.val_query,
-            # num test examples for all the novel categories
-            nTestBase=0,  # num test examples for all the base categories
-            batch_size=1,
-            num_workers=0,
-            epoch_size=1 * args.val_num_batch # 600 test tasks
-        )
-
-        self.model = MtlLearner(self.args, mode='meta')
+        # Load meta-val set
+        self.valset = self.Dataset('val')
+        self.val_sampler = CategoriesSampler(self.valset.label, self.args.val_num_batch, self.args.way,
+                                             self.args.shot + self.args.val_query)
+        self.val_loader = DataLoader(dataset=self.valset, batch_sampler=self.val_sampler, pin_memory=True)
+        self.model = MtlLearner(self.args)
 
         self.optimizer = torch.optim.Adam(
         [{'params': filter(lambda p: p.requires_grad, self.model.encoder.parameters()), 'lr': self.args.meta_lr1},
@@ -133,6 +111,13 @@ class MetaTrainer(object):
         # Set the timer
         timer = Timer()
 
+        label_support = torch.arange(self.args.way).repeat(self.args.shot)
+        label_support = label_support.type(torch.cuda.LongTensor)
+
+        # Generate the labels for test set of the episodes during meta-train updates
+        label_query = torch.arange(self.args.way).repeat(self.args.train_query)
+        label_query = label_query.type(torch.cuda.LongTensor)
+
         # Start meta-train
         for epoch in range(1, self.args.max_epoch + 1):
             # Update learning rate
@@ -142,10 +127,12 @@ class MetaTrainer(object):
             train_loss_averager = Averager()
             train_acc_averager = Averager()
 
-            # Using tqdm to read samples from train loader
-            tqdm_gen = tqdm.tqdm(self.train_loader(epoch))
+            # # Using tqdm to read samples from train loader
+            tqdm_gen = tqdm.tqdm(self.train_loader)
             for task_id, task in enumerate(tqdm_gen, 1):
-                data_support, label_support, data_query, label_query, _, _ = [x.squeeze().cuda() for x in task]
+                data = task[0].cuda()
+                p = self.args.shot * self.args.way
+                data_support, data_query = data[:p], data[p:]
 
                 # Output logits for model
                 evidence_q = self.model.meta_train_forward(data_support, label_support, data_query, epoch)
@@ -184,9 +171,11 @@ class MetaTrainer(object):
             # Start validation for this epoch, set model to eval mode
             self.model.eval()
             # Run meta-validation
-            tqdm_gen = tqdm.tqdm(self.val_loader(epoch))
+            tqdm_gen = tqdm.tqdm(self.val_loader)
             for task_id, task in enumerate(tqdm_gen, 1):
-                data_support, label_support, data_query, label_query, _, _ = [x.squeeze().cuda() for x in task]
+                data = task[0].cuda()
+                p = self.args.shot * self.args.way
+                data_support, data_query = data[:p], data[p:]
 
                 evidence_q = self.model.meta_train_forward(data_support, label_support, data_query, epoch)
                 alpha_q = evidence_q + 1

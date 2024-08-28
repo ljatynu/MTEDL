@@ -21,15 +21,12 @@ parser.add_argument('--phase', type=str, default='pre_train',
 parser.add_argument('--seed', type=int, default=0)  # Manual seed for PyTorch, "0" means using random seed
 parser.add_argument('--gpu', default='0')  # GPU id
 
-
 # Parameters for meta-train phase
 parser.add_argument('--max_epoch', type=int, default=100)  # Epoch number for meta-train phase
 parser.add_argument('--num_batch', type=int, default=100)  # The number for different tasks used for meta-train
-parser.add_argument('--shot', type=int, default=1)  # Shot number, how many samples for one class in a task
 parser.add_argument('--way', type=int, default=5)  # Way number, how many classes in a task
-parser.add_argument('--train_query', type=int,
-                    default=15)  # The number of training samples for each class in a task
-parser.add_argument('--val_query', type=int, default=15)  # The number of test samples for each class in a task
+parser.add_argument('--shot', type=int, default=5)  # Shot number, how many samples for one class in a task
+parser.add_argument('--query', type=int, default=15)  # The number of test samples for each class in a task
 parser.add_argument('--meta_lr1', type=float, default=0.0001)  # Learning rate for SS weights
 parser.add_argument('--meta_lr2', type=float, default=0.001)  # Learning rate for FC weights
 parser.add_argument('--base_lr', type=float, default=0.01)  # Learning rate for the inner loop

@@ -22,8 +22,7 @@ parser.add_argument('--train_num_batch', type=int, default=200)
 parser.add_argument('--val_num_batch', type=int, default=600)
 parser.add_argument('--shot', type=int, default=5)  # Shot number, how many samples for one class in a task
 parser.add_argument('--way', type=int, default=5)  # Way number, how many classes in a task
-parser.add_argument('--train_query', type=int,
-                default=15)  # The number of training samples for each class in a task
+parser.add_argument('--train_query', type=int, default=15)  # The number of training samples for each class in a task
 parser.add_argument('--val_query', type=int, default=15)  # The number of test samples for each class in a task
 parser.add_argument('--active_query', type=int, default=35)  # The number of test samples for each class in a task
 parser.add_argument('--meta_lr1', type=float, default=0.0001)  # Learning rate for SS weights

@@ -5,9 +5,13 @@ import tqdm
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from models.mtl import MtlLearner
-from utils.misc import Averager, Timer, count_acc, ensure_path
 
+from dataloader.CIFAR_FS import CIFAR_FS
+from dataloader.FC100 import FC100
+from dataloader.miniImageNet import MiniImageNet
+from dataloader.samplers import CategoriesSampler
+from models.mtl import MtlLearner
+from utils.misc import Averager, Timer, count_acc, ensure_path, get_task_data
 
 
 class PreTrainer(object):
@@ -33,45 +37,25 @@ class PreTrainer(object):
         # Set args to be shareable in the class
         self.args = args
 
+        print('==> Preparing In-distribution data...')
         if args.dataset == 'miniImageNet':
-            from data.mini_imagenet import MiniImageNet, FewShotDataloader
-            self.trainset = MiniImageNet(phase='train')
-            self.train_loader = DataLoader(dataset=self.trainset, batch_size=args.pre_batch_size,
-                                       shuffle=True, pin_memory=True)
-            self.valset = MiniImageNet(phase='val')
-            self.val_loader = FewShotDataloader(
-                                                dataset=self.valset,
-                                                nKnovel=args.way,
-                                                nKbase=0,
-                                                nExemplars=args.shot,  # num training examples per novel category
-                                                nTestNovel=args.way * args.query,
-                                                # num test examples for all the novel categories
-                                                nTestBase=0,  # num test examples for all the base categories
-                                                batch_size=1,
-                                                num_workers=0,
-                                                epoch_size=600  # 600 test tasks
-                                            )
+            Dataset = MiniImageNet
+        elif args.dataset == 'CIFAR-FS':
+            Dataset = CIFAR_FS
         elif args.dataset == 'FC100':
-            from data.FC100 import FC100, FewShotDataloader
-            self.trainset = FC100(phase='train')
-            self.train_loader = DataLoader(dataset=self.trainset, batch_size=args.pre_batch_size,
-                                           shuffle=True, pin_memory=True)
-            self.valset = FC100(phase='val')
-            self.val_loader = FewShotDataloader(
-                                                dataset=self.valset,
-                                                nKnovel=args.way,
-                                                nKbase=0,
-                                                nExemplars=args.shot,  # num training examples per novel category
-                                                nTestNovel=args.way * args.val_query,
-                                                # num test examples for all the novel categories
-                                                nTestBase=0,  # num test examples for all the base categories
-                                                batch_size=1,
-                                                num_workers=0,
-                                                epoch_size=600  # 600 test tasks
-                                            )
+            Dataset = FC100
+        # Load meta-train set
+        self.trainset = Dataset('train')
+        self.train_loader = DataLoader(dataset=self.trainset, batch_size=args.pre_batch_size, shuffle=True, pin_memory=True)
+
+        # Load meta-val set
+        self.valset = Dataset('val')
+        val_sampler = CategoriesSampler(self.valset.label, 600, args.way,
+                                    args.shot + args.query)
+        self.val_loader = DataLoader(dataset=self.valset, batch_sampler=val_sampler, pin_memory=True)
 
         # Set pretrain class number 
-        num_class_pretrain = self.trainset.num_cats
+        num_class_pretrain = len(set(self.trainset.label))
         print('num_class_pretrain: ', num_class_pretrain)
 
         # Build pretrain model
@@ -136,13 +120,13 @@ class PreTrainer(object):
                 loss = F.cross_entropy(logits, label)
                 # Calculate train accuracy
                 acc = count_acc(logits, label, logit=True)
-                # Write the tensorboardX records
-                # Print loss and accuracy for this step
-                tqdm_gen.set_description('Epoch {}, Loss={:.4f} Acc={:.4f}'.format(epoch, loss.item(), acc))
 
                 # Add loss and accuracy for the averagers
                 train_loss_averager.add(loss.item())
                 train_acc_averager.add(acc)
+
+                tqdm_gen.set_description('Epoch {}, Loss={:.4f} Acc={:.4f}'.format(epoch, train_loss_averager.data(), train_acc_averager.data()))
+
 
                 # Loss backwards and optimizer updates
                 self.optimizer.zero_grad()
@@ -164,9 +148,11 @@ class PreTrainer(object):
             # Print previous information  
             if epoch % 10 == 0:
                 print('Best Epoch {}, Best Val acc={:.4f}'.format(trlog['max_acc_epoch'], trlog['max_acc']))
+
             # Run meta-validation
-            for task_id, task in enumerate(self.val_loader(1)):
-                data_support, label_support, data_query, label_query, _, _ = [x.squeeze().cuda() for x in task]
+            tqdm_gen = tqdm.tqdm(self.val_loader)
+            for task_id, task in enumerate(tqdm_gen):
+                data_support, label_support, data_query, label_query = get_task_data(task, self.args)
 
                 logits = self.model((data_support, label_support, data_query))
                 loss = F.cross_entropy(logits, label_query)
@@ -174,11 +160,12 @@ class PreTrainer(object):
                 val_loss_averager.add(loss.item())
                 val_acc_averager.add(acc)
 
+                tqdm_gen.set_description('Validation: Epoch {}, Val, Loss={:.4f} Acc={:.4f}'.format(epoch, val_loss_averager.data(), val_acc_averager.data()))
+
             # Update validation averagers
             val_loss_averager = val_loss_averager.data()
             val_acc_averager = val_acc_averager.data()
             # Print loss and accuracy for this epoch
-            print('Epoch {}, Val, Loss={:.4f} Acc={:.4f}'.format(epoch, val_loss_averager, val_acc_averager))
 
             # Update best saved model
             if val_acc_averager > trlog['max_acc']:

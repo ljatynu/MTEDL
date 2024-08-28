@@ -4,9 +4,14 @@ import numpy as np
 import torch
 import os.path as osp
 
+from torch.utils.data import DataLoader
+
+from dataloader.CUB import CUB
+from dataloader.Places import Places
+from dataloader.samplers import CategoriesSampler
 from metrics import compute_differential_entropy, compute_mutual_information, compute_precision, ROC_OOD
 from models.mtl import MtlLearner
-from utils.misc import pprint, ECELoss, count_acc
+from utils.misc import pprint, ECELoss, count_acc, get_task_data
 from utils.gpu_tools import set_gpu
 
 def calculate_avg_std_ci95(data):
@@ -52,39 +57,17 @@ args = parser.parse_args()
 pprint(vars(args))
 set_gpu(args.gpu)
 
-print('==> Preparing In-distribution data...')
+print('==> Preparing Cross-domain data...')
 if args.dataset == 'CUB':
-    from data.CUB import CUB, FewShotDataloader
-    testdataset = CUB(phase='test')
-    test_loader = FewShotDataloader(
-        dataset=testdataset,
-        nKnovel=args.way,
-        nKbase=0,
-        nExemplars=args.shot,  # num training examples per novel category
-        nTestNovel=args.way * args.query,
-        # num test examples for all the novel categories
-        nTestBase=0,  # num test examples for all the base categories
-        batch_size=1,
-        num_workers=0,
-        epoch_size=1 * args.task_num  # 600 test tasks
-    )
+    Dataset = CUB
 elif args.dataset == 'Places':
-    from data.Places import Places, FewShotDataloader
-    testdataset = Places(phase='test')
-    test_loader = FewShotDataloader(
-        dataset=testdataset,
-        nKnovel=args.way,
-        nKbase=0,
-        nExemplars=args.shot,  # num training examples per novel category
-        nTestNovel=args.way * args.query,
-        # num test examples for all the novel categories
-        nTestBase=0,  # num test examples for all the base categories
-        batch_size=1,
-        num_workers=0,
-        epoch_size=1 * args.task_num  # 600 test tasks
-    )
+    Dataset = Places
 
-    pass
+# Load meta-train set
+dataset = Dataset('test')
+sampler = CategoriesSampler(dataset.label, args.task_num, args.way,
+                            args.shot + args.query)
+dataloader = DataLoader(dataset=dataset, batch_sampler=sampler, pin_memory=True)
 
 print('==> Preparing Model...')
 model = MtlLearner(args)
@@ -101,8 +84,8 @@ eces = []
 
 ECE = ECELoss(n_bins=15, logit=False)
 
-for task_id, task in enumerate(test_loader(1)):
-    data_support, label_support, data_query, label_query, _, _ = [x.squeeze().cuda() for x in task]
+for task_id, task in enumerate(dataloader, 1):
+    data_support, label_support, data_query, label_query = get_task_data(task, args)
 
     evidence = model.cross_domain_forward(data_support, label_support, data_query)
 
@@ -119,6 +102,6 @@ for task_id, task in enumerate(test_loader(1)):
     avg_acc, std_acc, ci95_acc = calculate_avg_std_ci95(accs)
 
     print('Cross-Domain classification performance: Task [{}/{}]: Accuracy: {:.2f} ± {:.1f} % ({:.2f} %)'.
-        format(task_id, len(test_loader), avg_acc, ci95_acc, acc))
+        format(task_id, len(dataloader), avg_acc, ci95_acc, acc))
 
     pass

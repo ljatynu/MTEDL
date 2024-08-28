@@ -4,9 +4,15 @@ import numpy as np
 import torch
 import os.path as osp
 
+from torch.utils.data import DataLoader
+
+from dataloader.CIFAR_FS import CIFAR_FS
+from dataloader.FC100 import FC100
+from dataloader.miniImageNet import MiniImageNet
+from dataloader.samplers import CategoriesSampler
 from metrics import compute_differential_entropy, compute_mutual_information, compute_precision, ROC_OOD
 from models.mtl import MtlLearner
-from utils.misc import pprint, ECELoss, count_acc
+from utils.misc import pprint, ECELoss, count_acc, get_task_data
 from utils.gpu_tools import set_gpu
 
 def calculate_avg_std_ci95(data):
@@ -20,7 +26,7 @@ def calculate_avg_std_ci95(data):
 parser = argparse.ArgumentParser()
 # Basic parameters
 parser.add_argument('--model_type', type=str, default='ResNet', choices=['ResNet'])  # The network architecture
-parser.add_argument('--dataset', type=str, default='CIFAR-FS', choices=['miniImageNet', 'CIFAR-FS', 'FC100'])  # Dataset
+parser.add_argument('--dataset', type=str, default='miniImageNet', choices=['miniImageNet', 'CIFAR-FS', 'FC100'])  # Dataset
 parser.add_argument('--phase', type=str, default='meta_eval', choices=['pre_train', 'meta_train', 'meta_eval', 'OOD_test', 'threshold_test', 'active'])  # Phase
 parser.add_argument('--seed', type=int, default=0)  # Manual seed for PyTorch, "0" means using random seed
 parser.add_argument('--gpu', default='0')  # GPU id
@@ -53,54 +59,17 @@ pprint(vars(args))
 set_gpu(args.gpu)
 
 print('==> Preparing data...')
-if args.dataset=='miniImageNet':
-    from data.mini_imagenet import MiniImageNet, FewShotDataloader
-    testdataset = MiniImageNet(phase='test')
-    test_loader = FewShotDataloader(
-        dataset=testdataset,
-        nKnovel=args.way,
-        nKbase=0,
-        nExemplars=args.shot,  # num training examples per novel category
-        nTestNovel=args.way * args.query,
-        # num test examples for all the novel categories
-        nTestBase=0,  # num test examples for all the base categories
-        batch_size=1,
-        num_workers=0,
-        epoch_size=1 * args.task_num  # 600 test tasks
-    )
-elif args.dataset=='CIFAR-FS':
-    from data.CIFAR_FS import CIFAR_FS, FewShotDataloader
-    testdataset = CIFAR_FS(phase='test')
-    test_loader = FewShotDataloader(
-        dataset=testdataset,
-        nKnovel=args.way,
-        nKbase=0,
-        nExemplars=args.shot,  # num training examples per novel category
-        nTestNovel=args.way * args.query,
-        # num test examples for all the novel categories
-        nTestBase=0,  # num test examples for all the base categories
-        batch_size=1,
-        num_workers=0,
-        epoch_size=1 * args.task_num  # 600 test tasks
-    )
-
-    pass
-elif args.dataset=='FC100':
-    from data.FC100 import FC100, FewShotDataloader
-
-    testdataset = FC100(phase='test')
-    test_loader = FewShotDataloader(
-        dataset=testdataset,
-        nKnovel=args.way,
-        nKbase=0,
-        nExemplars=args.shot,  # num training examples per novel category
-        nTestNovel=args.way * args.query,
-        # num test examples for all the novel categories
-        nTestBase=0,  # num test examples for all the base categories
-        batch_size=1,
-        num_workers=0,
-        epoch_size=1 * args.task_num  # 600 test tasks
-    )
+if args.dataset == 'miniImageNet':
+    Dataset = MiniImageNet
+elif args.dataset == 'CIFAR-FS':
+    Dataset = CIFAR_FS
+elif args.dataset == 'FC100':
+    Dataset = FC100
+# Load meta-train set
+dataset = Dataset('test')
+sampler = CategoriesSampler(dataset.label, args.task_num, args.way,
+                            args.shot + args.query)
+dataloader = DataLoader(dataset=dataset, batch_sampler=sampler, pin_memory=True)
 
 print('==> Preparing Model...')
 model = MtlLearner(args)
@@ -116,8 +85,8 @@ eces = []
 
 ECE = ECELoss(n_bins=15, logit=False)
 
-for task_id, task in enumerate(test_loader(1)):
-    data_support, label_support, data_query, label_query, _, _ = [x.squeeze().cuda() for x in task]
+for task_id, task in enumerate(dataloader, 1):
+    data_support, label_support, data_query, label_query = get_task_data(task, args)
 
     evidence = model.aleatoric_forward(data_support, label_support, data_query)
 
@@ -133,6 +102,6 @@ for task_id, task in enumerate(test_loader(1)):
     avg_ece, std_ece, ci95_ece = calculate_avg_std_ci95(eces)
 
     print('Aleatoric uncertainty estimation: Task [{}/{}]: ECE: {:.4f} ± {:.4f} % ({:.2f} %)'.
-        format(task_id, len(test_loader), avg_ece, ci95_ece, ece))
+        format(task_id, len(dataloader), avg_ece, ci95_ece, ece))
 
     pass

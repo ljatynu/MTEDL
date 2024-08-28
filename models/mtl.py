@@ -47,7 +47,7 @@ class MtlLearner(nn.Module):
         self.update_step = args.update_step
         z_dim = 640
 
-        if self.mode == 'meta' or self.mode == 'meta_train':
+        if self.mode == 'meta':
             self.encoder = ResNet12Backbone_MTL()
             self.meta_update_lr = args.meta_base_lr
             self.pre_update_lr = args.pre_base_lr

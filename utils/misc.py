@@ -173,3 +173,18 @@ def get_confidence(inputs, logit):
         prob = inputs
     confidence, prediction = torch.max(prob, 1)
     return prediction, confidence
+
+def get_task_data(task, args):
+    data = task[0].cuda()
+    p = args.shot * args.way
+    data_support, data_query = data[:p], data[p:]
+
+    label_support = torch.arange(args.way).repeat(args.shot)
+    label_support = label_support.type(torch.cuda.LongTensor)
+
+    # Generate the labels for test set of the episodes during meta-train updates
+    label_query = torch.arange(args.way).repeat(args.query)
+    label_query = label_query.type(torch.cuda.LongTensor)
+
+    return data_support, label_support, data_query, label_query
+

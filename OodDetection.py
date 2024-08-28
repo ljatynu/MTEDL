@@ -2,10 +2,16 @@ import argparse
 
 import numpy as np
 import torch
+from torch.utils.data import DataLoader
 
+from dataloader.CIFAR_FS import CIFAR_FS
+from dataloader.FC100 import FC100
+from dataloader.Places import Places
+from dataloader.miniImageNet import MiniImageNet
+from dataloader.samplers import CategoriesSampler
 from metrics import compute_differential_entropy, compute_mutual_information, compute_precision, ROC_OOD
 from models.mtl import MtlLearner
-from utils.misc import pprint, count_acc
+from utils.misc import pprint, count_acc, get_task_data
 from utils.gpu_tools import set_gpu
 
 def get_uncertainty_score(logits, label=0):
@@ -29,7 +35,7 @@ def calculate_avg_std_ci95(data):
 parser = argparse.ArgumentParser()
 # Basic parameters
 parser.add_argument('--model_type', type=str, default='ResNet', choices=['ResNet'])  # The network architecture
-parser.add_argument('--dataset', type=str, default='CIFAR-FS', choices=['miniImageNet', 'CIFAR-FS', 'FC100'])  # Dataset
+parser.add_argument('--dataset', type=str, default='miniImageNet', choices=['miniImageNet', 'CIFAR-FS', 'FC100'])  # Dataset
 parser.add_argument('--phase', type=str, default='meta_eval', choices=['pre_train', 'meta_train', 'meta_eval', 'OOD_test', 'threshold_test', 'active'])  # Phase
 parser.add_argument('--seed', type=int, default=0)  # Manual seed for PyTorch, "0" means using random seed
 parser.add_argument('--gpu', default='0')  # GPU id
@@ -60,70 +66,24 @@ pprint(vars(args))
 set_gpu(args.gpu)
 
 print('==> Preparing In-distribution data...')
-if args.dataset=='miniImageNet':
-    from data.mini_imagenet import MiniImageNet, FewShotDataloader
-    testdataset = MiniImageNet(phase='test')
-    test_loader = FewShotDataloader(
-        dataset=testdataset,
-        nKnovel=args.way,
-        nKbase=0,
-        nExemplars=args.shot,  # num training examples per novel category
-        nTestNovel=args.way * args.query,
-        # num test examples for all the novel categories
-        nTestBase=0,  # num test examples for all the base categories
-        batch_size=1,
-        num_workers=0,
-        epoch_size=1 * args.task_num  # 600 test tasks
-    )
-elif args.dataset=='CIFAR-FS':
-    from data.CIFAR_FS import CIFAR_FS, FewShotDataloader
-    testdataset = CIFAR_FS(phase='test')
-    test_loader = FewShotDataloader(
-        dataset=testdataset,
-        nKnovel=args.way,
-        nKbase=0,
-        nExemplars=args.shot,  # num training examples per novel category
-        nTestNovel=args.way * args.query,
-        # num test examples for all the novel categories
-        nTestBase=0,  # num test examples for all the base categories
-        batch_size=1,
-        num_workers=0,
-        epoch_size=1 * args.task_num  # 600 test tasks
-    )
-
-    pass
-elif args.dataset=='FC100':
-    from data.FC100 import FC100, FewShotDataloader
-
-    testdataset = FC100(phase='test')
-    test_loader = FewShotDataloader(
-        dataset=testdataset,
-        nKnovel=args.way,
-        nKbase=0,
-        nExemplars=args.shot,  # num training examples per novel category
-        nTestNovel=args.way * args.query,
-        # num test examples for all the novel categories
-        nTestBase=0,  # num test examples for all the base categories
-        batch_size=1,
-        num_workers=0,
-        epoch_size=1 * args.task_num  # 600 test tasks
-    )
+if args.dataset == 'miniImageNet':
+    Dataset = MiniImageNet
+elif args.dataset == 'CIFAR-FS':
+    Dataset = CIFAR_FS
+elif args.dataset == 'FC100':
+    Dataset = FC100
+# Load meta-train set
+dataset = Dataset('test')
+sampler = CategoriesSampler(dataset.label, args.task_num, args.way,
+                            args.shot + args.query)
+dataloader = DataLoader(dataset=dataset, batch_sampler=sampler, pin_memory=True)
 
 print('==> Preparing Out-of-distribution data...')
-from data.Places import Places, FewShotDataloader
-ood_dataset = Places(phase='test')
-ood_loader = FewShotDataloader(
-    dataset=ood_dataset,
-    nKnovel=args.way,
-    nKbase=0,
-    nExemplars=args.shot,  # num training examples per novel category
-    nTestNovel=args.way * args.query,
-    # num test examples for all the novel categories
-    nTestBase=0,  # num test examples for all the base categories
-    batch_size=1,
-    num_workers=0,
-    epoch_size=1 * args.task_num  # 600 test tasks
-)
+OodDataset = Places
+ood_dataset = OodDataset('test')
+OodSampler = CategoriesSampler(ood_dataset.label, args.task_num, args.way,
+                            args.shot + args.query)
+ood_dataloader = DataLoader(dataset=ood_dataset, batch_sampler=OodSampler, pin_memory=True)
 
 print('==> Preparing Model...')
 model = MtlLearner(args)
@@ -147,9 +107,9 @@ auroc_MIs = []
 auroc_precisions = []
 
 
-for task_id, (task, ood_task) in enumerate(zip(test_loader(1), ood_loader(1))):
-    data_support, label_support, data_query, label_query, _, _ = [x.squeeze().cuda() for x in task]
-    ood_data_support, ood_label_support, ood_data_query, ood_labels_query, _, _ = [x.squeeze().cuda() for x in ood_task]
+for task_id, (task, ood_task) in enumerate(zip(dataloader, ood_dataloader), 1):
+    data_support, label_support, data_query, label_query = get_task_data(task, args)
+    ood_data_support, ood_label_support, ood_data_query, ood_labels_query = get_task_data(ood_task, args)
 
     evidence, ood_evidence = model.ood_forward(data_support, label_support, data_query, ood_data_query)
     alpha = evidence + 1
@@ -186,7 +146,7 @@ for task_id, (task, ood_task) in enumerate(zip(test_loader(1), ood_loader(1))):
     avg_auroc_precision, std_auroc_precision, ci95_auroc_precision = calculate_avg_std_ci95(auroc_precisions)
 
     print('Task [{}/{}]: AUROC_Dent: {:.1f} ± {:.1f} % ({:.1f} %), AUROC_MI: {:.1f} ± {:.1f} % ({:.1f} %), AUROC_precision: {:.1f} ± {:.1f} % ({:.1f} %)'.
-        format(task_id, len(test_loader), avg_auroc_Dent, ci95_auroc_Dent, auroc_Dent, avg_auroc_MI, ci95_auroc_MI, auroc_MI, avg_auroc_precision,
+        format(task_id, len(dataloader), avg_auroc_Dent, ci95_auroc_Dent, auroc_Dent, avg_auroc_MI, ci95_auroc_MI, auroc_MI, avg_auroc_precision,
                ci95_auroc_precision, auroc_precision))
 
     pass

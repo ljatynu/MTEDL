@@ -4,9 +4,15 @@ import numpy as np
 import torch
 import os.path as osp
 
+from torch.utils.data import DataLoader
+
+from dataloader.CIFAR_FS import CIFAR_FS
+from dataloader.FC100 import FC100
+from dataloader.miniImageNet import MiniImageNet
+from dataloader.samplers import CategoriesSampler
 from metrics import compute_differential_entropy, compute_mutual_information, compute_precision, ROC_OOD
 from models.mtl import MtlLearner
-from utils.misc import pprint, ECELoss, count_acc
+from utils.misc import pprint, ECELoss, count_acc, get_task_data
 from utils.gpu_tools import set_gpu
 
 def calculate_avg_std_ci95(data):
@@ -30,7 +36,7 @@ parser.add_argument('--max_epoch', type=int, default=100)  # Epoch number for me
 parser.add_argument('--train_num_batch', type=int, default=200)
 parser.add_argument('--val_num_batch', type=int, default=600)
 parser.add_argument('--way', type=int, default=5)  # Way number, how many classes in a task
-parser.add_argument('--shot', type=int, default=5)  # Shot number, how many samples for one class in a task
+parser.add_argument('--shot', type=int, default=5)  # Shot number, how many samples for each class in a task
 parser.add_argument('--query', type=int, default=15)  # The number of training samples for each class in a task
 parser.add_argument("--task_num", default=600, type=int, help="Number of test tasks")
 
@@ -53,54 +59,17 @@ pprint(vars(args))
 set_gpu(args.gpu)
 
 print('==> Preparing In-distribution data...')
-if args.dataset=='miniImageNet':
-    from data.mini_imagenet import MiniImageNet, FewShotDataloader
-    testdataset = MiniImageNet(phase='test')
-    test_loader = FewShotDataloader(
-        dataset=testdataset,
-        nKnovel=args.way,
-        nKbase=0,
-        nExemplars=args.shot,  # num training examples per novel category
-        nTestNovel=args.way * args.query,
-        # num test examples for all the novel categories
-        nTestBase=0,  # num test examples for all the base categories
-        batch_size=1,
-        num_workers=0,
-        epoch_size=1 * args.task_num  # 600 test tasks
-    )
-elif args.dataset=='CIFAR-FS':
-    from data.CIFAR_FS import CIFAR_FS, FewShotDataloader
-    testdataset = CIFAR_FS(phase='test')
-    test_loader = FewShotDataloader(
-        dataset=testdataset,
-        nKnovel=args.way,
-        nKbase=0,
-        nExemplars=args.shot,  # num training examples per novel category
-        nTestNovel=args.way * args.query,
-        # num test examples for all the novel categories
-        nTestBase=0,  # num test examples for all the base categories
-        batch_size=1,
-        num_workers=0,
-        epoch_size=1 * args.task_num  # 600 test tasks
-    )
-
-    pass
-elif args.dataset=='FC100':
-    from data.FC100 import FC100, FewShotDataloader
-
-    testdataset = FC100(phase='test')
-    test_loader = FewShotDataloader(
-        dataset=testdataset,
-        nKnovel=args.way,
-        nKbase=0,
-        nExemplars=args.shot,  # num training examples per novel category
-        nTestNovel=args.way * args.query,
-        # num test examples for all the novel categories
-        nTestBase=0,  # num test examples for all the base categories
-        batch_size=1,
-        num_workers=0,
-        epoch_size=1 * args.task_num  # 600 test tasks
-    )
+if args.dataset == 'miniImageNet':
+    Dataset = MiniImageNet
+elif args.dataset == 'CIFAR-FS':
+    Dataset = CIFAR_FS
+elif args.dataset == 'FC100':
+    Dataset = FC100
+# Load meta-train set
+dataset = Dataset('test')
+sampler = CategoriesSampler(dataset.label, args.task_num, args.way,
+                            args.shot + args.query)
+dataloader = DataLoader(dataset=dataset, batch_sampler=sampler, pin_memory=True)
 
 print('==> Preparing Model...')
 model = MtlLearner(args)
@@ -114,9 +83,8 @@ model.eval()
 
 accs = []
 
-
-for task_id, task in enumerate(test_loader(1)):
-    data_support, label_support, data_query, label_query, _, _ = [x.squeeze().cuda() for x in task]
+for task_id, task in enumerate(dataloader, 1):
+    data_support, label_support, data_query, label_query = get_task_data(task, args)
 
     evidence = model.within_domain_forward(data_support, label_support, data_query)
 
@@ -133,6 +101,6 @@ for task_id, task in enumerate(test_loader(1)):
     avg_acc, std_acc, ci95_acc = calculate_avg_std_ci95(accs)
 
     print('Within-domain Prediction Performance. Task [{}/{}]: Accuracy: {:.2f} ± {:.1f} % ({:.2f} %)'.
-        format(task_id, len(test_loader), avg_acc, ci95_acc, acc))
+        format(task_id, len(dataloader), avg_acc, ci95_acc, acc))
 
     pass
