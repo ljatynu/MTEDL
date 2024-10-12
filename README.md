@@ -1,7 +1,7 @@
 # Meta Transfer Evidence Deep Learning for Trustworthy Few-Shot Classification
 
-This repository is an implementation of our paper "Meta Transfer Evidence Deep Learning for Trustworthy Few-Shot
-Classification" in PyTorch. We propose a method called **<u>MetaTEDL</u>**, aiming at enhancing (1)
+This repository is an implementation of our paper ["Meta Transfer Evidence Deep Learning for Trustworthy Few-Shot
+Classification"](https://doi.org/10.1016/j.eswa.2024.125371) in PyTorch. We propose a method called **<u>MetaTEDL</u>**, aiming at enhancing (1)
 prediction accuracy; (2) uncertainty quantification capacity (UQ) performance; (3) OOD detection performance; and (4)
 Active learning efficiency of Evidential Neural Network (ENN), in the few-shot scenarios.
 
@@ -343,10 +343,13 @@ Thanks for the support of the following repositories:
 If you find this work useful to you, please cite our paper:
 
 ```
-@article{XXX,
-  title={Meta Transfer Evidence Deep Learning for Trustworthy Few-Shot Classification},
-  author={XXX},
-  journal={XXX},
-  year={2024}
+@article{liu2025meta,
+  title={Meta transfer evidence deep learning for trustworthy few-shot classification},
+  author={Liu, Tong and Wen, Chaoyu and Xiong, Qiangwei and Li, Jin},
+  journal={Expert Systems with Applications},
+  volume={259},
+  pages={125371},
+  year={2025},
+  publisher={Elsevier}
 }
 ```
